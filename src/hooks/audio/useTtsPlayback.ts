@@ -366,6 +366,11 @@ export function useTtsPlayback(input: UseTtsPlaybackInput) {
         loadLayout: () => Promise.resolve(latestSeekLayoutRef.current),
         isCurrent: () => runId === playbackRunIdRef.current,
         playbackRate: audioSpeed,
+        // Cold generation is ~15s per serialized chunk, so the default 60s
+        // deadline expires while the window is still legitimately building and
+        // surfaces as "TTS playback failed". Give a long-lived self-hosted GPU
+        // three times that before declaring the start unreachable.
+        timeoutMs: 180_000,
       });
       if (runId !== playbackRunIdRef.current || !initialSeekLayout) return;
       startupTiming.readinessMs = performance.now() - readinessStartedAt;

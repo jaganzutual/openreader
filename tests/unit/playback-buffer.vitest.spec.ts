@@ -32,4 +32,19 @@ describe('playback ahead buffer', () => {
       minimumWallMs: PLAYBACK_RECOVERY_BUFFER_WALL_MS,
     })).toBe(false);
   });
+
+  test('dead segments do not deadlock start readiness', () => {
+    // An errored chunk at the cursor is streamed as frame-quantized silence;
+    // readiness must measure across it instead of timing out forever.
+    const withDeadChunk = [
+      { ordinal: 0, durationMs: 0, generated: false },
+      { ordinal: 1, durationMs: 6_000, generated: true },
+      { ordinal: 2, durationMs: 6_000, generated: true },
+    ];
+    const buffer = measurePlaybackBuffer({ segments: withDeadChunk, startOrdinal: 0, playbackRate: 1 });
+    expect(buffer.skippedDead).toBe(1);
+    expect(buffer.segmentCount).toBe(2);
+    expect(buffer.wallMs).toBe(12_000);
+    expect(isPlaybackBufferReady({ segments: withDeadChunk, startOrdinal: 0, playbackRate: 1 })).toBe(true);
+  });
 });

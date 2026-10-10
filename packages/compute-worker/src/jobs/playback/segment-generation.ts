@@ -28,7 +28,9 @@ const SEGMENT_RETRY_BACKOFF_MS = 1_000;
 // Keep a small ordered pipeline full so a provider configured for parallel
 // requests can build playback runway. Provider capacity remains the actual,
 // admin-controlled concurrency limit; this is only bounded local look-ahead.
-const TTS_SYNTHESIS_PIPELINE_DEPTH = 3;
+// 4 covers a 3-slot upstream with one slot always stalled in alignment/ffmpeg
+// handoff, at zero lease-churn risk since capacity is acquired per request.
+const TTS_SYNTHESIS_PIPELINE_DEPTH = 4;
 const GENERATION_LEASE_MIN_MS = 60_000;
 const GENERATION_LEASE_GRACE_MS = 30_000;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

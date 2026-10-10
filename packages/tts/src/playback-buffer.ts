@@ -16,9 +16,18 @@ export function measurePlaybackBuffer(input: {
   const startIndex = input.segments.findIndex((segment) => segment.ordinal === input.startOrdinal);
   let durationMs = 0;
   let segmentCount = 0;
+  let skippedDead = 0;
   if (startIndex >= 0) {
     for (const segment of input.segments.slice(startIndex)) {
-      if (!segment.generated || !Number.isFinite(segment.durationMs) || segment.durationMs <= 0) break;
+      if (!segment.generated || !Number.isFinite(segment.durationMs) || segment.durationMs <= 0) {
+        // Tell dead and pending apart. A dead chunk is skipped so a single
+        // poisoned segment at the cursor cannot deadlock start readiness; the
+        // audio stream already plays frame-quantized silence over dead slots
+        // and playback resumes real speech right after it. A pending chunk
+        // still means "generation may land here" and keeps the measure empty.
+        skippedDead += 1;
+        continue;
+      }
       durationMs += segment.durationMs;
       segmentCount++;
     }
@@ -29,6 +38,7 @@ export function measurePlaybackBuffer(input: {
     durationMs: remainingMs,
     wallMs: remainingMs / rate,
     segmentCount,
+    skippedDead,
     reachedDocumentEnd: startIndex >= 0 && segmentCount > 0 && startIndex + segmentCount === input.segments.length,
   };
 }
