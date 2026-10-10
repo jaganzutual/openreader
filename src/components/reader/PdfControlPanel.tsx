@@ -15,6 +15,7 @@ import {
 import { LoadingSpinner } from '@/components/Spinner';
 import { IconButton, RangeField, Section } from '@/components/ui';
 import { formatPlaybackTime } from '@/lib/client/format-playback-time';
+import { pipeLog } from '@/lib/client/tts/pipeline-log';
 import { resolvePlaybackControlPresentation } from '@/lib/client/tts/playback-control';
 import {
   readyTimelineBands,
@@ -93,7 +94,9 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
         }
       }
       if (ordered.length > 0) {
-        fresh.push({ id: Date.now(), text: `plan ready · ${ordered.length} chunks queued` });
+        const line = `plan ready · ${ordered.length} chunks queued`;
+        pipeLog('chunks', line);
+        fresh.push({ id: Date.now(), text: line });
       }
     } else {
       for (const segment of ordered) {
@@ -101,7 +104,9 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
         if (seenGeneratedRef.current.has(segment.ordinal)) continue;
         seenGeneratedRef.current.add(segment.ordinal);
         const secs = Math.max(1, Math.round((segment.endMs - segment.startMs) / 1000));
-        fresh.push({ id: segment.ordinal, text: `chunk ${segment.ordinal} audio back · ${secs}s` });
+        const line = `chunk ${segment.ordinal} audio back · ${secs}s`;
+        pipeLog('chunks', line);
+        fresh.push({ id: segment.ordinal, text: line });
       }
       fresh.reverse();
     }
@@ -109,6 +114,15 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
       setActivity((prev) => [...fresh, ...prev].slice(0, 6));
     }
   }, [playbackSeekLayout]);
+
+  // Phase + starter-buffer transitions: the "why am I still waiting" answers.
+  const lastPhaseRef = useRef<string>('');
+  useEffect(() => {
+    const key = `${isPlaying ? 'playing' : 'paused'}:${playbackPhase}`;
+    if (lastPhaseRef.current === key) return;
+    lastPhaseRef.current = key;
+    pipeLog('player', `phase → ${key}`);
+  }, [isPlaying, playbackPhase]);
 
   // Live background-generation readout: total ready chunks anywhere plus the
   // contiguous run from the cursor (what the player waits for before starting).

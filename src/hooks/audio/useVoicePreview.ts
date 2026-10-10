@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchVoicePreview, VoicePreviewRequestError } from '@/lib/client/api/tts';
+import { pipeError, pipeLog, pipeWarn } from '@/lib/client/tts/pipeline-log';
 import type { TTSSegmentSettings } from '@/types/client';
 
 export type VoicePreviewState =
@@ -49,9 +50,13 @@ export function useVoicePreview(input: { isPlaying: boolean; pausePlayback: () =
     const controller = new AbortController();
     abortRef.current = controller;
     setState({ phase: 'loading', key });
+    const started = Date.now();
+    const voice = request.settings.voice ?? '?';
+    pipeLog('preview', `request voice=${voice} chars=${request.text.length}`);
     try {
       const blob = await fetchVoicePreview(request, controller.signal);
       if (controller.signal.aborted) return;
+      pipeLog('preview', `audio back in ${Date.now() - started}ms bytes=${blob.size} — decoding`);
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       urlRef.current = url;
@@ -61,6 +66,7 @@ export function useVoicePreview(input: { isPlaying: boolean; pausePlayback: () =
       };
       audio.onerror = () => {
         if (audioRef.current !== audio) return;
+        pipeError('preview', `audio element error after ${Date.now() - started}ms`);
         release();
         setState({ phase: 'error', key, message: 'Preview could not be played.' });
       };
@@ -68,11 +74,13 @@ export function useVoicePreview(input: { isPlaying: boolean; pausePlayback: () =
       if (audioRef.current === audio) setState({ phase: 'playing', key });
     } catch (error) {
       if (controller.signal.aborted) return;
+      const message = error instanceof VoicePreviewRequestError ? error.message : 'Preview is unavailable right now.';
+      pipeWarn('preview', `failed after ${Date.now() - started}ms: ${message}`);
       release();
       setState({
         phase: 'error',
         key,
-        message: error instanceof VoicePreviewRequestError ? error.message : 'Preview is unavailable right now.',
+        message,
       });
     }
   }, [isPlaying, pausePlayback, release, stop]);
