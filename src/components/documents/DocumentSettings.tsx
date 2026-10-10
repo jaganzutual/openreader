@@ -70,7 +70,7 @@ const DOCUMENT_LANGUAGE_OPTIONS = [
   { value: 'th', label: 'Thai' },
 ];
 
-export function DocumentSettings({ isOpen, setIsOpen, documentId, epub, html, language, detectedLanguage, onLanguageChange, pdf }: {
+export function DocumentSettings({ isOpen, setIsOpen, documentId, epub, html, language, detectedLanguage, onLanguageChange, pdf, docked = false }: {
   isOpen: boolean,
   setIsOpen: (isOpen: boolean) => void,
   documentId?: string,
@@ -86,7 +86,12 @@ export function DocumentSettings({ isOpen, setIsOpen, documentId, epub, html, la
     onToggleOverlay: (enabled: boolean) => void;
     onToggleSkipKind: (kind: ParsedPdfBlockKind, enabled: boolean) => void;
     onForceReparse: () => void;
-  }
+  },
+  /**
+   * Render the settings form inline for a docked control panel instead of the
+   * slide-over. Pass isOpen with no-op setIsOpen; dialogs stay inline.
+   */
+  docked?: boolean,
 }) {
   const {
     viewType,
@@ -137,15 +142,8 @@ export function DocumentSettings({ isOpen, setIsOpen, documentId, epub, html, la
     setLocalMaxBlockLength(ttsSegmentMaxBlockLength);
   }, [ttsSegmentMaxBlockLength]);
 
-  return (
-    <ReaderSidebarShell
-      isOpen={isOpen}
-      onClose={() => setIsOpen(false)}
-      ariaLabel="Document settings"
-      title="Reader Settings"
-      bodyClassName="flex-1 overflow-y-auto px-4 py-4 bg-[radial-gradient(circle_at_top_right,color-mix(in_srgb,var(--accent),transparent_92%),transparent_35%)]"
-      panelClassName="w-full sm:w-[30rem]"
-    >
+  const content = (
+    <>
       <div className="space-y-5">
         {language && onLanguageChange ? (
           <Section title="Language" variant="group">
@@ -290,6 +288,23 @@ export function DocumentSettings({ isOpen, setIsOpen, documentId, epub, html, la
         )}
       </div>
       {planChangeDialog}
+    </>
+  );
+
+  if (docked) {
+    return <div className="space-y-4">{content}</div>;
+  }
+
+  return (
+    <ReaderSidebarShell
+      isOpen={isOpen}
+      onClose={() => setIsOpen(false)}
+      ariaLabel="Document settings"
+      title="Reader Settings"
+      bodyClassName="flex-1 overflow-y-auto px-4 py-4 bg-[radial-gradient(circle_at_top_right,color-mix(in_srgb,var(--accent),transparent_92%),transparent_35%)]"
+      panelClassName="w-full sm:w-[30rem]"
+    >
+      {content}
     </ReaderSidebarShell>
   );
 }

@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import toast from 'react-hot-toast';
 import { useTTS } from '@/contexts/TTSContext';
 import { DocumentSettings } from '@/components/documents/DocumentSettings';
@@ -11,7 +11,8 @@ import { Header } from '@/components/Header';
 import { AudiobookExportModal } from '@/components/AudiobookExportModal';
 import { VoiceSidebar } from '@/components/player/VoiceSidebar';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import TTSPlayer from '@/components/player/TTSPlayer';
+import { PdfControlPanel } from '@/components/reader/PdfControlPanel';
+import { ChevronLeftIcon } from '@/components/icons/Icons';
 import { useFeatureFlag } from '@/contexts/RuntimeConfigContext';
 import {
   ReaderShell,
@@ -91,7 +92,9 @@ function PdfReader({
     setPdfSkipBlockKinds,
   } = useTTS();
   const [zoomLevel, setZoomLevel] = useState<number>(100);
-  const [activeSidebar, setActiveSidebar] = useState<null | 'settings' | 'audiobook' | 'voice' | ReaderNavigationPanel>(null);
+  const [activeSidebar, setActiveSidebar] = useState<null | 'audiobook' | ReaderNavigationPanel>(null);
+  const [panelOpen, setPanelOpen] = useState<boolean>(true);
+  const viewerRef = useRef<HTMLDivElement | null>(null);
   const { sentenceBookmark } = useDocumentBookmarks(routeDocumentId);
   const [showForceReparseConfirm, setShowForceReparseConfirm] = useState(false);
   const [isForceReparseStarting, setIsForceReparseStarting] = useState(false);
@@ -128,6 +131,30 @@ function PdfReader({
 
   const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 10, 300));
   const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 10, 50));
+
+  const scrollToPanelSection = useCallback((sectionId: string) => {
+    setPanelOpen(true);
+    window.setTimeout(() => {
+      document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  }, []);
+
+  // Cursor-aware PDF zoom: Ctrl+wheel (mouse wheel or trackpad pinch) over the
+  // PDF viewport zooms only the document. The listener is native + non-passive
+  // so the browser page zoom can be suppressed; anywhere outside the viewport
+  // (panel, toolbar, header) the gesture behaves normally and the PDF is untouched.
+  useEffect(() => {
+    const el = viewerRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 10 : -10;
+      setZoomLevel((prev) => Math.min(300, Math.max(50, prev + delta)));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   const handleBackToDocuments = useCallback((event?: MouseEvent) => {
     event?.preventDefault();
@@ -179,9 +206,9 @@ function PdfReader({
               zoomLevel={zoomLevel}
               onZoomIncrease={handleZoomIn}
               onZoomDecrease={handleZoomOut}
-              onOpenSettings={() => setActiveSidebar((prev) => prev === 'settings' ? null : 'settings')}
+              onOpenSettings={() => scrollToPanelSection('pdf-settings-section')}
               onOpenAudiobook={() => setActiveSidebar((prev) => prev === 'audiobook' ? null : 'audiobook')}
-              isSettingsOpen={activeSidebar === 'settings'}
+              isSettingsOpen={panelOpen}
               isAudiobookOpen={activeSidebar === 'audiobook'}
               showAudiobookExport={canExportAudiobook}
               minZoom={50}
@@ -213,7 +240,13 @@ function PdfReader({
             />
           ) : null}
         />
-        <div className={rendererReady ? 'min-h-0 flex-1' : 'min-h-0 flex-1 opacity-0 pointer-events-none'}>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
+          <div
+            ref={viewerRef}
+            className={rendererReady
+              ? 'min-h-[60vh] min-w-0 shrink-0 lg:min-h-0 lg:flex-1'
+              : 'min-h-[60vh] min-w-0 shrink-0 pointer-events-none opacity-0 lg:min-h-0 lg:flex-1'}
+          >
           {readerShowsLayout ? (
             <PDFViewer
               zoomLevel={zoomLevel}
@@ -224,60 +257,86 @@ function PdfReader({
           ) : (
             <PlanTextReader className="h-full" readerType="pdf" onReady={onReady} onError={onError} />
           )}
+          </div>
+          {panelOpen ? (
+            <aside aria-label="Reader controls" className="w-full shrink-0 lg:w-1/4 lg:min-w-[300px] lg:max-w-[400px] lg:self-stretch">
+              <PdfControlPanel
+                documentTitle={currDocName || payload.document.name}
+                isPlaybackReady={isPlaybackReady}
+                onCollapse={() => setPanelOpen(false)}
+                voice={(
+                  <VoiceSidebar
+                    isOpen
+                    onClose={() => undefined}
+                    docked
+                  />
+                )}
+                settings={(
+                  <DocumentSettings
+                    isOpen
+                    setIsOpen={() => undefined}
+                    docked
+                    documentId={routeDocumentId}
+                    language={documentSettings.language ?? 'auto'}
+                    detectedLanguage={payload.document.language}
+                    onLanguageChange={(language) => {
+                      const nextSettings: DocumentSettingsValue = {
+                        ...documentSettings,
+                        schemaVersion: 1,
+                        language,
+                      };
+                      void updateDocumentSettings(nextSettings);
+                    }}
+                    pdf={{
+                      parseStatus: isForceReparseStarting ? 'running' : 'ready',
+                      parsedOverlayEnabled,
+                      skipBlockKinds: documentSettings.pdf?.skipBlockKinds ?? [],
+                      onToggleOverlay: (enabled) => setParsedOverlayEnabled(enabled),
+                      onToggleSkipKind: (kind, enabled) => {
+                        const current = new Set(documentSettings.pdf?.skipBlockKinds ?? []);
+                        if (enabled) current.add(kind);
+                        else current.delete(kind);
+                        const nextSettings: DocumentSettingsValue = {
+                          ...documentSettings,
+                          schemaVersion: 1,
+                          pdf: {
+                            ...(documentSettings.pdf ?? {}),
+                            skipBlockKinds: Array.from(current),
+                          },
+                        };
+                        void updateDocumentSettings(nextSettings);
+                      },
+                      onForceReparse: requestForceReparse,
+                    }}
+                  />
+                )}
+              />
+            </aside>
+          ) : (
+            <div className="shrink-0 lg:flex lg:items-start lg:justify-center lg:pt-2">
+              <button
+                type="button"
+                onClick={() => setPanelOpen(true)}
+                aria-label="Show controls panel"
+                title="Show controls panel"
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-line-soft bg-surface-solid px-3 py-2 text-xs font-medium text-soft hover:text-accent lg:w-auto lg:flex-col lg:gap-2 lg:px-2 lg:py-3"
+              >
+                <ChevronLeftIcon className="h-4 w-4 lg:rotate-90" />
+                <span className="lg:[writing-mode:vertical-rl]">Controls</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {canExportAudiobook && (
         <AudiobookExportModal
           isOpen={activeSidebar === 'audiobook'}
           setIsOpen={(isOpen) => setActiveSidebar((prev) => isOpen ? 'audiobook' : (prev === 'audiobook' ? null : prev))}
-          onChangeVoice={() => setActiveSidebar('voice')}
+          onChangeVoice={() => scrollToPanelSection('pdf-voice-section')}
           documentType="pdf"
           documentId={routeDocumentId}
         />
       )}
-      {rendererReady ? (
-        <TTSPlayer isPlaybackReady={isPlaybackReady} documentTitle={currDocName || payload.document.name} onOpenVoicePanel={() => setActiveSidebar('voice')} />
-      ) : null}
-      <VoiceSidebar
-        isOpen={activeSidebar === 'voice'}
-        onClose={() => setActiveSidebar((prev) => (prev === 'voice' ? null : prev))}
-      />
-      <DocumentSettings
-        isOpen={activeSidebar === 'settings'}
-        setIsOpen={(isOpen) => setActiveSidebar((prev) => isOpen ? 'settings' : (prev === 'settings' ? null : prev))}
-        documentId={routeDocumentId}
-        language={documentSettings.language ?? 'auto'}
-        detectedLanguage={payload.document.language}
-        onLanguageChange={(language) => {
-          const nextSettings: DocumentSettingsValue = {
-            ...documentSettings,
-            schemaVersion: 1,
-            language,
-          };
-          void updateDocumentSettings(nextSettings);
-        }}
-        pdf={{
-          parseStatus: isForceReparseStarting ? 'running' : 'ready',
-          parsedOverlayEnabled,
-          skipBlockKinds: documentSettings.pdf?.skipBlockKinds ?? [],
-          onToggleOverlay: (enabled) => setParsedOverlayEnabled(enabled),
-          onToggleSkipKind: (kind, enabled) => {
-            const current = new Set(documentSettings.pdf?.skipBlockKinds ?? []);
-            if (enabled) current.add(kind);
-            else current.delete(kind);
-            const nextSettings: DocumentSettingsValue = {
-              ...documentSettings,
-              schemaVersion: 1,
-              pdf: {
-                ...(documentSettings.pdf ?? {}),
-                skipBlockKinds: Array.from(current),
-              },
-            };
-            void updateDocumentSettings(nextSettings);
-          },
-          onForceReparse: requestForceReparse,
-        }}
-      />
       <ReaderNavigationSidebars
         open={isReaderNavigationPanel(activeSidebar) ? activeSidebar : null}
         onClose={() => setActiveSidebar(null)}

@@ -59,7 +59,15 @@ function PreviewButton({ previewKey, label, state, disabled, onPlay, onStop }: {
  * restart. Closing the panel discards the draft. Previews speak a short
  * sample with the draft settings and never touch the document's audio.
  */
-export function VoiceSidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+export function VoiceSidebar({ isOpen, onClose, docked = false }: {
+  isOpen: boolean;
+  onClose: () => void;
+  /**
+   * Render the voice form inline for a docked control panel instead of the
+   * slide-over. Pass isOpen with no-op onClose; the draft footer stays inline.
+   */
+  docked?: boolean;
+}) {
   const { providerRef, providerType, ttsModel, ttsInstructions, voiceSpeed } = useConfig();
   const {
     voice: appliedVoice,
@@ -179,18 +187,8 @@ export function VoiceSidebar({ isOpen, onClose }: { isOpen: boolean; onClose: ()
 
   const previewError = preview.state.phase === 'error' ? preview.state : null;
 
-  return (
-    <ReaderSidebarShell
-      isOpen={isOpen}
-      onClose={close}
-      ariaLabel="Voice"
-      title="Voice"
-      subtitle={`${providerName} · ${ttsModel}`}
-      footer={footer}
-      bodyClassName="flex-1 overflow-y-auto px-4 py-4 bg-[radial-gradient(circle_at_top_right,color-mix(in_srgb,var(--accent),transparent_92%),transparent_35%)]"
-      panelClassName="w-full sm:w-[24rem]"
-    >
-      <div className="space-y-5">
+  const content = (
+    <div className="space-y-5">
         {policy.supportsNativeModelSpeed && (
           <Section title="Model speed" variant="group">
             <RangeField
@@ -295,6 +293,29 @@ export function VoiceSidebar({ isOpen, onClose }: { isOpen: boolean; onClose: ()
           </div>
         </Section>
       </div>
+  );
+
+  if (docked) {
+    return (
+      <div className="space-y-4">
+        {footer}
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <ReaderSidebarShell
+      isOpen={isOpen}
+      onClose={close}
+      ariaLabel="Voice"
+      title="Voice"
+      subtitle={`${providerName} · ${ttsModel}`}
+      footer={footer}
+      bodyClassName="flex-1 overflow-y-auto px-4 py-4 bg-[radial-gradient(circle_at_top_right,color-mix(in_srgb,var(--accent),transparent_92%),transparent_35%)]"
+      panelClassName="w-full sm:w-[24rem]"
+    >
+      {content}
     </ReaderSidebarShell>
   );
 }
