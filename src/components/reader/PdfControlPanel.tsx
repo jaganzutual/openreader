@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useParams } from 'next/navigation';
 import { useTTS, useTTSPlaybackProgress } from '@/contexts/TTSContext';
 import { useConfig } from '@/contexts/ConfigContext';
-import { measurePlaybackBuffer } from '@openreader/tts/playback-buffer';
+import { measurePlaybackBuffer, PLAYBACK_START_BUFFER_WALL_MS } from '@openreader/tts/playback-buffer';
 import {
   ChevronRightIcon,
   PauseIcon,
@@ -75,6 +75,40 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
     [playbackSeekLayout],
   );
   const heardPercent = timelineFraction(shownSec, playbackDurationSec) * 100;
+
+  // Live background-generation readout: total ready chunks anywhere plus the
+  // contiguous run from the cursor (what the player waits for before starting).
+  const bufferStat = useMemo(() => {
+    const segments = playbackSeekLayout?.segments;
+    if (!segments || segments.length === 0) return null;
+    const ordered = [...segments].sort((a, b) => a.ordinal - b.ordinal);
+    let readyChunks = 0;
+    let readyMs = 0;
+    for (const segment of ordered) {
+      if (!segment.generated || segment.endMs <= segment.startMs) continue;
+      readyChunks += 1;
+      readyMs += segment.endMs - segment.startMs;
+    }
+    const cursorMs = playbackTimeSec * 1000;
+    const cursor = ordered.find((segment) => cursorMs >= segment.startMs && cursorMs < segment.endMs)
+      ?? ordered[0];
+    let contiguousChunks = 0;
+    let contiguousMs = 0;
+    for (const segment of ordered) {
+      if (!cursor || segment.ordinal < cursor.ordinal) continue;
+      if (!segment.generated || segment.endMs <= segment.startMs) break;
+      contiguousChunks += 1;
+      contiguousMs += segment.endMs - segment.startMs;
+    }
+    return {
+      readyChunks,
+      totalChunks: ordered.length,
+      readySec: Math.round(readyMs / 1000),
+      contiguousChunks,
+      contiguousSec: contiguousMs / 1000,
+      needSec: PLAYBACK_START_BUFFER_WALL_MS / 1000,
+    };
+  }, [playbackSeekLayout, playbackTimeSec]);
 
   const scrubOriginSecRef = useRef<number | null>(null);
   const [scrubUndo, setScrubUndo] = useState<{ targetSec: number; id: number } | null>(null);
@@ -231,6 +265,34 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
           </button>
         )}
       </div>
+
+      {bufferStat && (
+        <div className="space-y-1.5 rounded-lg border border-line-soft bg-surface-sunken px-3 py-2" aria-live="polite">
+          <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-soft">
+            <span>
+              {bufferStat.readyChunks}/{bufferStat.totalChunks} chunks ready · {bufferStat.readySec}s audio
+            </span>
+            <span className="font-medium text-accent">
+              {bufferStat.contiguousSec >= bufferStat.needSec
+                ? 'ready to play'
+                : `${Math.floor(bufferStat.contiguousSec)}s of ${bufferStat.needSec}s to start`}
+            </span>
+          </div>
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--foreground)_12%,transparent)]"
+            role="progressbar"
+            aria-label="Contiguous audio buffered from cursor"
+            aria-valuemin={0}
+            aria-valuemax={Math.round(bufferStat.needSec)}
+            aria-valuenow={Math.floor(Math.min(bufferStat.contiguousSec, bufferStat.needSec))}
+          >
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-500"
+              style={{ width: `${Math.min(100, (bufferStat.contiguousSec / bufferStat.needSec) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
