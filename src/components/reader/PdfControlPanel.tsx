@@ -76,6 +76,40 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
   );
   const heardPercent = timelineFraction(shownSec, playbackDurationSec) * 100;
 
+  // Rolling per-chunk activity feed: every segment that flips to generated
+  // gets a line (most recent first). Answers "what just happened" without
+  // needing the server logs.
+  const [activity, setActivity] = useState<Array<{ id: number; text: string }>>([]);
+  const seenGeneratedRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const segments = playbackSeekLayout?.segments;
+    if (!segments || segments.length === 0) return;
+    const fresh: Array<{ id: number; text: string }> = [];
+    const ordered = [...segments].sort((a, b) => a.ordinal - b.ordinal);
+    if (seenGeneratedRef.current.size === 0) {
+      for (const segment of ordered) {
+        if (segment.generated && segment.endMs > segment.startMs) {
+          seenGeneratedRef.current.add(segment.ordinal);
+        }
+      }
+      if (ordered.length > 0) {
+        fresh.push({ id: Date.now(), text: `plan ready · ${ordered.length} chunks queued` });
+      }
+    } else {
+      for (const segment of ordered) {
+        if (!segment.generated || segment.endMs <= segment.startMs) continue;
+        if (seenGeneratedRef.current.has(segment.ordinal)) continue;
+        seenGeneratedRef.current.add(segment.ordinal);
+        const secs = Math.max(1, Math.round((segment.endMs - segment.startMs) / 1000));
+        fresh.push({ id: segment.ordinal, text: `chunk ${segment.ordinal} audio back · ${secs}s` });
+      }
+      fresh.reverse();
+    }
+    if (fresh.length > 0) {
+      setActivity((prev) => [...fresh, ...prev].slice(0, 6));
+    }
+  }, [playbackSeekLayout]);
+
   // Live background-generation readout: total ready chunks anywhere plus the
   // contiguous run from the cursor (what the player waits for before starting).
   const bufferStat = useMemo(() => {
@@ -267,8 +301,7 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
       </div>
 
       {bufferStat && (
-        <div className="space-y-1.5 rounded-lg border border-line-soft bg-surface-sunken px-3 py-2" aria-live="polite">
-          <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-soft">
+        <div className="space-y-1.5 rounded-lg border border-line-soft bg-surface-sunken px-3 py-2" aria-live="polite">          <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums text-soft">
             <span>
               {bufferStat.readyChunks}/{bufferStat.totalChunks} chunks ready · {bufferStat.readySec}s audio
             </span>
@@ -292,6 +325,16 @@ function PanelTransport({ documentTitle, isPlaybackReady, hasReadableContent }: 
             />
           </div>
         </div>
+      )}
+      {activity.length > 0 && (
+        <ul aria-label="Recent generation activity" className="space-y-1 rounded-lg border border-line-soft bg-surface-sunken px-3 py-2 font-mono text-[11px] tabular-nums text-soft">
+          {activity.map((entry) => (
+            <li key={entry.id} className="truncate" title={entry.text}>
+              <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+              {entry.text}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
