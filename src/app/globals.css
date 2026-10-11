@@ -283,6 +283,45 @@ h1, h2, h3, h4, h5, h6 {
   isolation: isolate;
 }
 
+/* Unrendered far-from-viewport pages in scroll mode. Sized to the real page
+ * aspect so the scrollbar stays accurate; restyled when a canvas replaces it. */
+.pdf-viewer .pdf-page-placeholder {
+  background: var(--background);
+  border-radius: 2px;
+}
+
+/**
+ * PDF page reading themes. Applied to the whole page stage so canvases,
+ * text layers, and overlays invert/tint together, keeping the app UI dark.
+ * Night inverts fully (so glyphs stay pure white on a true black page and
+ * anti-aliased edges keep their contrast), then dims/boosts contrast for a
+ * comfortable surface; hue counter-rotation keeps document colors readable.
+ */
+.pdf-viewer.pdf-theme-night .pdf-page-stage {
+  filter: invert(1) hue-rotate(180deg) brightness(0.94) contrast(1.06);
+}
+
+.pdf-viewer.pdf-theme-sepia .pdf-page-stage {
+  filter: sepia(0.38) saturate(1.05) brightness(1.01);
+}
+
+/* Reading progress scrubber */
+.pdf-page-scrubber {
+  accent-color: var(--accent);
+}
+
+/* PDF read-along overlays. Geometry is set inline by src/lib/client/pdf.ts;
+ * the appearance lives here so themes can restyle it in one place. */
+.pdf-viewer .pdf-text-highlight-overlay {
+  background-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: 3px;
+}
+
+.pdf-viewer .pdf-word-highlight-overlay {
+  background-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 3px;
+}
+
 /* Fade-in the freshly rendered canvas (react-pdf replaces the canvas element). */
 .pdf-viewer .react-pdf__Page canvas {
   display: block;

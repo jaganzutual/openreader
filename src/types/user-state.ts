@@ -20,6 +20,7 @@ export const SYNCED_PREFERENCE_KEYS = [
   'savedVoices',
   'pdfHighlightEnabled',
   'pdfWordHighlightEnabled',
+  'pdfPageTheme',
   'epubHighlightEnabled',
   'epubWordHighlightEnabled',
   'htmlHighlightEnabled',

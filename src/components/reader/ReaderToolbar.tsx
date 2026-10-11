@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTTS } from '@/contexts/TTSContext';
 import {
   BookmarkIcon,
@@ -8,8 +8,12 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ListIcon,
+  MoonIcon,
+  PaletteIcon,
   SearchIcon,
+  SunIcon,
 } from '@/components/icons/Icons';
+import type { PdfPageTheme } from '@/types/config';
 import {
   Input, MenuActionItem, MenuItemsSurface, MenuRoot, MenuTransition, MenuTrigger,
   PopoverRoot, PopoverSurface, PopoverTrigger, ToolbarButton, cn,
@@ -23,7 +27,20 @@ export interface SentenceBookmarkControl {
   onToggle: () => void;
 }
 
+export interface ReadingThemeControl {
+  value: PdfPageTheme;
+  onChange: (theme: PdfPageTheme) => void;
+}
+
 const compactButton = 'px-1.5 sm:px-2';
+
+const READING_THEME_ORDER: readonly PdfPageTheme[] = ['light', 'night', 'sepia'];
+
+const READING_THEME_META: Record<PdfPageTheme, { label: string; icon: ReactNode }> = {
+  light: { label: 'Light page', icon: <SunIcon aria-hidden="true" className="h-4 w-4" /> },
+  night: { label: 'Night page', icon: <MoonIcon aria-hidden="true" className="h-4 w-4" /> },
+  sepia: { label: 'Sepia page', icon: <PaletteIcon aria-hidden="true" className="h-4 w-4" /> },
+};
 
 /**
  * The reading toolbar under the document header, shared by every reader:
@@ -36,12 +53,15 @@ export function ReaderToolbar({
   onTogglePanel,
   sentenceBookmark,
   navigation,
+  readingTheme,
   hidden = false,
 }: {
   activePanel: ReaderNavigationPanel | null;
   onTogglePanel: (panel: ReaderNavigationPanel) => void;
   sentenceBookmark: SentenceBookmarkControl;
   navigation?: ReactNode;
+  /** Optional PDF page-theme cycle control. */
+  readingTheme?: ReadingThemeControl;
   /** Keeps the toolbar's height while the reader is still loading. */
   hidden?: boolean;
 }) {
@@ -78,6 +98,21 @@ export function ReaderToolbar({
         >
           <SearchIcon aria-hidden="true" className="h-4 w-4" />
         </ToolbarButton>
+        {readingTheme && (
+          <ToolbarButton
+            onClick={() => {
+              const next = READING_THEME_ORDER[
+                (READING_THEME_ORDER.indexOf(readingTheme.value) + 1) % READING_THEME_ORDER.length
+              ];
+              readingTheme.onChange(next);
+            }}
+            aria-label={`Reading theme: ${READING_THEME_META[readingTheme.value].label} (cycles)`}
+            title={`Reading theme: ${READING_THEME_META[readingTheme.value].label}`}
+            className={compactButton}
+          >
+            {READING_THEME_META[readingTheme.value].icon}
+          </ToolbarButton>
+        )}
       </div>
       <div className="flex min-w-0 items-center justify-center">{navigation}</div>
       <MenuRoot as="div" className="relative inline-flex shrink-0 items-center text-left">
@@ -243,5 +278,83 @@ export function ReadingProgress() {
     <span className="whitespace-nowrap tabular-nums" aria-label={`Reading position ${percent}%`}>
       {percent}%
     </span>
+  );
+}
+
+/**
+ * Draggable page scrubber with book-progress stats for paginated readers.
+ *
+ * While dragging, the visual position updates immediately but the seek commits
+ * at most once every `COMMIT_DEBOUNCE_MS` (and on release), so scrubbing does
+ * not flood the playback cursor with superseded page commands.
+ */
+export function ReaderPageScrubber({
+  currentPage,
+  numPages,
+  onSeekPage,
+}: {
+  currentPage: number;
+  numPages: number;
+  onSeekPage: (page: number) => void;
+}) {
+  const [dragValue, setDragValue] = useState<number | null>(null);
+  const commitTimerRef = useRef<number | null>(null);
+  const pendingRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current);
+  }, []);
+
+  const commit = () => {
+    if (commitTimerRef.current !== null) {
+      window.clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    setDragValue(null);
+    if (pending !== null && pending !== currentPage) onSeekPage(Math.min(Math.max(pending, 1), numPages));
+  };
+
+  const scheduleCommit = () => {
+    if (commitTimerRef.current !== null) window.clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = window.setTimeout(commit, 250);
+  };
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const page = Number.parseInt(event.target.value, 10);
+    if (Number.isNaN(page)) return;
+    pendingRef.current = page;
+    setDragValue(page);
+    scheduleCommit();
+  };
+
+  // Progress stats describe the settled reading position, not the drag preview.
+  const percent = numPages > 1 ? Math.round(((currentPage - 1) / (numPages - 1)) * 100) : 100;
+  const pagesLeft = Math.max(0, numPages - currentPage);
+  const value = dragValue ?? currentPage;
+
+  return (
+    <div className="flex items-center gap-2" data-testid="page-scrubber">
+      <input
+        type="range"
+        min={1}
+        max={Math.max(1, numPages)}
+        value={value}
+        onChange={handleChange}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+        className="pdf-page-scrubber h-1 w-16 cursor-pointer sm:w-28 md:w-36"
+        aria-label="Reading position"
+        title="Scrub pages"
+      />
+      <span
+        className="hidden whitespace-nowrap text-xs tabular-nums text-faint lg:inline"
+        aria-label={`Book ${percent} percent complete, ${pagesLeft} pages left`}
+      >
+        {percent}% · {pagesLeft} left
+      </span>
+    </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useParams, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import toast from 'react-hot-toast';
 import { useTTS } from '@/contexts/TTSContext';
 import { DocumentSettings } from '@/components/documents/DocumentSettings';
@@ -28,9 +28,13 @@ import { forceReparsePdfDocument } from '@/lib/client/api/documents';
 import type { DocumentSettings as DocumentSettingsValue } from '@/types/document-settings';
 import { usePdfDocument } from './usePdfDocument';
 import { useConfig } from '@/contexts/ConfigContext';
+import { ToolbarButton } from '@/components/ui';
+import { CrosshairIcon } from '@/components/icons/Icons';
 import { PlanTextReader } from '@/components/views/HTMLViewer';
-import { PageJumpControl, ReaderPager, ReaderToolbar } from '@/components/reader/ReaderToolbar';
+import { PageJumpControl, ReaderPageScrubber, ReaderPager, ReaderToolbar } from '@/components/reader/ReaderToolbar';
 import { ReaderNavigationSidebars, isReaderNavigationPanel, type ReaderNavigationPanel } from '@/components/reader/ReaderNavigationSidebars';
+import { buildPdfBlockSearchIndex, foldText, type PdfBlockSearchEntry } from '@/lib/client/reader/book-search';
+import type { PdfPageTheme } from '@/types/config';
 import { useDocumentBookmarks } from '@/hooks/useDocumentBookmarks';
 import { usePdfOutline } from '@/hooks/pdf/usePdfOutline';
 
@@ -84,14 +88,17 @@ function PdfReader({
     setParsedOverlayEnabled,
     pdfDocument,
   } = pdfState;
-  const { readerShowsLayout } = useConfig();
+  const { readerShowsLayout, pdfPageTheme, updateConfigKey } = useConfig();
   const outline = usePdfOutline(pdfDocument);
   const {
     stop,
+    togglePlay,
     skipToLocation,
     setPdfSkipBlockKinds,
   } = useTTS();
   const [zoomLevel, setZoomLevel] = useState<number>(100);
+  // Bumped to ask the PDF view to re-sync to the sentence being read.
+  const [followRequest, setFollowRequest] = useState(0);
   const [activeSidebar, setActiveSidebar] = useState<null | 'audiobook' | ReaderNavigationPanel>(null);
   const [panelOpen, setPanelOpen] = useState<boolean>(true);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -131,6 +138,54 @@ function PdfReader({
 
   const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 10, 300));
   const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 10, 50));
+
+  // Space toggles play/pause unless an interactive control owns the key
+  // (buttons, links, fields, the page scrubber…), which keeps the browser's
+  // native space activation intact for those.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target && (
+          target.isContentEditable
+          || /^INPUT$|^TEXTAREA$|^SELECT$|^BUTTON$|^A$|^AUDIO$|^VIDEO$/.test(target.tagName)
+          || target.closest('button, a[href], input, textarea, select, [role="button"], [contenteditable]')
+        )
+      ) return;
+      event.preventDefault();
+      togglePlay();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [togglePlay]);
+
+  // Searched blocks map to parsed-block search entries; skip-kind filtering
+  // matches what the planner read aloud.
+  const pdfSearch = useMemo(() => {
+    if (!payload.parsedDocument) return undefined;
+    const skip = new Set(documentSettings.pdf?.skipBlockKinds ?? []);
+    const blocks: PdfBlockSearchEntry[] = [];
+    for (const page of payload.parsedDocument.pages) {
+      for (const block of page.blocks) {
+        if (skip.has(block.kind) || !block.text.trim()) continue;
+        blocks.push({
+          key: `pdf:${page.pageNumber}:${block.id}`,
+          page: page.pageNumber,
+          blockId: block.id,
+          text: block.text,
+        });
+      }
+    }
+    return {
+      blocks,
+      onSeekPage: (page: number) => skipToLocation(page, true),
+    };
+  }, [documentSettings.pdf?.skipBlockKinds, payload.parsedDocument, skipToLocation]);
+
+  const handleReadingThemeChange = useCallback((theme: PdfPageTheme) => {
+    void updateConfigKey('pdfPageTheme', theme);
+  }, [updateConfigKey]);
 
   const scrollToPanelSection = useCallback((sectionId: string) => {
     setPanelOpen(true);
@@ -223,21 +278,37 @@ function PdfReader({
           activePanel={isReaderNavigationPanel(activeSidebar) ? activeSidebar : null}
           onTogglePanel={(panel) => setActiveSidebar((prev) => prev === panel ? null : panel)}
           sentenceBookmark={sentenceBookmark}
+          readingTheme={{ value: pdfPageTheme, onChange: handleReadingThemeChange }}
           navigation={currDocPages ? (
-            <ReaderPager
-              unit="page"
-              onPrevious={() => skipToLocation(currDocPage - 1, true)}
-              onNext={() => skipToLocation(currDocPage + 1, true)}
-              canPrevious={currDocPage > 1}
-              canNext={currDocPage < currDocPages}
-              position={(
-                <PageJumpControl
-                  currentPage={currDocPage}
-                  numPages={currDocPages}
-                  onGoToPage={(page) => skipToLocation(page, true)}
-                />
-              )}
-            />
+            <div className="flex items-center gap-2">
+              <ReaderPager
+                unit="page"
+                onPrevious={() => skipToLocation(currDocPage - 1, true)}
+                onNext={() => skipToLocation(currDocPage + 1, true)}
+                canPrevious={currDocPage > 1}
+                canNext={currDocPage < currDocPages}
+                position={(
+                  <PageJumpControl
+                    currentPage={currDocPage}
+                    numPages={currDocPages}
+                    onGoToPage={(page) => skipToLocation(page, true)}
+                  />
+                )}
+              />
+              <ReaderPageScrubber
+                currentPage={currDocPage}
+                numPages={currDocPages}
+                onSeekPage={(page) => skipToLocation(page, true)}
+              />
+              <ToolbarButton
+                onClick={() => setFollowRequest((value) => value + 1)}
+                aria-label="Show current sentence"
+                title="Show the sentence being read (audio keeps playing while you scroll)"
+                className="px-1.5 sm:px-2"
+              >
+                <CrosshairIcon aria-hidden="true" className="h-4 w-4" />
+              </ToolbarButton>
+            </div>
           ) : null}
         />
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
@@ -250,6 +321,7 @@ function PdfReader({
           {readerShowsLayout ? (
             <PDFViewer
               zoomLevel={zoomLevel}
+              followRequest={followRequest}
               onReady={onReady}
               onError={onError}
               pdfState={pdfState}
@@ -343,6 +415,7 @@ function PdfReader({
         outline={outline}
         documentTitle={currDocName || payload.document.name}
         documentId={routeDocumentId}
+        pdfSearch={pdfSearch}
       />
       <ConfirmDialog
         isOpen={showForceReparseConfirm}

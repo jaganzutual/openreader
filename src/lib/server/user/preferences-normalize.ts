@@ -119,6 +119,9 @@ export function sanitizePreferencesPatch(
       case 'htmlWordHighlightEnabled':
         if (typeof value === 'boolean') out[key] = value;
         break;
+      case 'pdfPageTheme':
+        if (value === 'light' || value === 'night' || value === 'sepia') out[key] = value;
+        break;
       case 'savedVoices':
         out[key] = sanitizeSavedVoices(value);
         break;

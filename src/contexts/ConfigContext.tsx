@@ -35,6 +35,7 @@ interface ConfigContextType {
   preferencesError: Error | null;
   pdfHighlightEnabled: boolean;
   pdfWordHighlightEnabled: boolean;
+  pdfPageTheme: AppConfigValues['pdfPageTheme'];
   epubHighlightEnabled: boolean;
   epubWordHighlightEnabled: boolean;
   htmlHighlightEnabled: boolean;
@@ -106,6 +107,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       preferencesError: query.error,
       pdfHighlightEnabled: config.pdfHighlightEnabled,
       pdfWordHighlightEnabled: config.pdfWordHighlightEnabled,
+      pdfPageTheme: config.pdfPageTheme,
       epubHighlightEnabled: config.epubHighlightEnabled,
       epubWordHighlightEnabled: config.epubWordHighlightEnabled,
       htmlHighlightEnabled: config.htmlHighlightEnabled,

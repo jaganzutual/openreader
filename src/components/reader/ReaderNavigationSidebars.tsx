@@ -4,6 +4,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTTS } from '@/contexts/TTSContext';
 import { useDocumentBookmarks } from '@/hooks/useDocumentBookmarks';
+import { indexSegmentsBySource } from '@/lib/client/reader/segment-hit';
 import { ReaderSidebarShell } from '@/components/reader/ReaderSidebarShell';
 import { IconButton, Input, SearchField } from '@/components/ui';
 import { PencilIcon, SearchIcon } from '@/components/icons/Icons';
@@ -14,7 +15,12 @@ import type { DocumentBookmark } from '@/types/bookmarks';
 import {
   BOOK_SEARCH_RESULT_LIMIT,
   buildBookSearchIndex,
+  buildPdfBlockSearchIndex,
+  foldText,
   searchBookIndex,
+  searchPdfBlockIndex,
+  type PdfBlockSearchEntry,
+  type PdfBlockSearchResult,
 } from '@/lib/client/reader/book-search';
 import {
   chapterIndexForOrdinal,
@@ -40,12 +46,19 @@ export function ReaderNavigationSidebars({
   outline,
   documentTitle,
   documentId,
+  pdfSearch,
 }: {
   open: ReaderNavigationPanel | null;
   onClose: () => void;
   outline: readonly OutlineEntry[];
   documentTitle: string;
   documentId: string;
+  /** Optional parsed-block search for PDF readers; falls back to plan search. */
+  pdfSearch?: {
+    blocks: readonly PdfBlockSearchEntry[];
+    /** Seeks to the page when the block has no playback sentence yet. */
+    onSeekPage: (page: number) => void;
+  };
 }) {
   return (
     <>
@@ -67,7 +80,7 @@ export function ReaderNavigationSidebars({
         panelClassName="w-full sm:w-[24rem]"
         bodyClassName="flex-1 min-h-0 flex flex-col"
       >
-        <SearchPanel />
+        <SearchPanel pdfSearch={pdfSearch} />
       </ReaderSidebarShell>
       <ReaderSidebarShell
         isOpen={open === 'bookmarks'}
@@ -134,17 +147,73 @@ function ContentsList({
   );
 }
 
-function SearchPanel() {
-  const { playbackSegments, skipToOrdinal } = useTTS();
+/**
+ * Resolve a match inside a block to the plan sentence that contains it, walking
+ * the block's segments in order. Segment texts are planner-normalized, so the
+ * folded offsets are approximate; a match spanning a boundary picks the first
+ * sentence it touches, which is what a tap at that point would seek to.
+ */
+function resolvePdfBlockOrdinal(
+  candidates: readonly { ordinal: number; text: string }[],
+  matchFoldedOffset: number,
+): number | null {
+  if (!candidates.length) return null;
+  let consumed = 0;
+  for (const candidate of candidates) {
+    const { folded } = foldText(candidate.text);
+    consumed += folded.length;
+    if (matchFoldedOffset < consumed + 1) return candidate.ordinal;
+  }
+  return candidates[candidates.length - 1].ordinal;
+}
+
+function SearchPanel({
+  pdfSearch,
+}: {
+  pdfSearch?: {
+    blocks: readonly PdfBlockSearchEntry[];
+    onSeekPage: (page: number) => void;
+  };
+}) {
+  const { playbackSegments, skipToOrdinal, skipToLocation } = useTTS();
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
   // Built once per open panel and plan; the panel unmounts when closed.
-  const index = useMemo(() => buildBookSearchIndex(playbackSegments), [playbackSegments]);
-  const results = useMemo(
-    () => searchBookIndex(index, deferredQuery, BOOK_SEARCH_RESULT_LIMIT),
-    [deferredQuery, index],
+  const planIndex = useMemo(() => buildBookSearchIndex(playbackSegments), [playbackSegments]);
+  const planResults = useMemo(
+    () => searchBookIndex(planIndex, deferredQuery, BOOK_SEARCH_RESULT_LIMIT),
+    [deferredQuery, planIndex],
   );
+
+  // PDF readers search the parsed layout blocks so hits are sought through the
+  // same sentence-ordinal command as tapping the text.
+  const pdfBlockIndex = useMemo(
+    () => (pdfSearch ? buildPdfBlockSearchIndex(pdfSearch.blocks) : null),
+    [pdfSearch],
+  );
+  const blockSegments = useMemo(
+    () => (pdfSearch ? indexSegmentsBySource(playbackSegments) : null),
+    [pdfSearch, playbackSegments],
+  );
+  const pdfResults = useMemo(() => {
+    if (!blockSegments || !pdfBlockIndex) return null;
+    return searchPdfBlockIndex(pdfBlockIndex, deferredQuery, BOOK_SEARCH_RESULT_LIMIT)
+      .map((result) => ({
+        result,
+        ordinal: resolvePdfBlockOrdinal(
+          blockSegments.get(result.key) ?? [],
+          result.matchFoldedOffset,
+        ),
+      }));
+  }, [blockSegments, deferredQuery, pdfBlockIndex]);
+
+  const results = pdfResults ?? planResults;
   const trimmed = deferredQuery.trim();
+
+  const seekToResult = (item: { ordinal: number | null; page: number }) => {
+    if (item.ordinal !== null && skipToOrdinal(item.ordinal)) return;
+    skipToLocation(item.page, true);
+  };
 
   return (
     <>
@@ -168,7 +237,27 @@ function SearchPanel() {
         ) : null}
       </div>
       <ol className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5" aria-label="Search results">
-        {results.map((result) => (
+        {pdfResults && pdfResults.map(({ result, ordinal }) => (
+          <li key={result.id}>
+            <button
+              type="button"
+              onClick={() => seekToResult({ ordinal, page: result.page })}
+              className="w-full rounded-md px-2 py-1.5 text-left text-xs leading-relaxed text-soft transition-colors duration-fast hover:bg-surface-sunken"
+            >
+              <span className="mb-1 inline-block rounded-sm bg-surface-sunken px-1.5 py-0.5 text-[11px] tabular-nums text-faint">
+                Page {result.page}
+              </span>
+              <span>
+                {result.snippet.slice(0, result.matchStart)}
+                <mark className="rounded-sm bg-accent-wash px-0.5 text-accent">
+                  {result.snippet.slice(result.matchStart, result.matchEnd)}
+                </mark>
+                {result.snippet.slice(result.matchEnd)}
+              </span>
+            </button>
+          </li>
+        ))}
+        {!pdfResults && planResults.map((result) => (
           <li key={result.id}>
             <button
               type="button"

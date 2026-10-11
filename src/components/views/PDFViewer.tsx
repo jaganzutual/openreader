@@ -14,9 +14,12 @@ import { resolvePdfBlockAtPoint } from '@/lib/client/pdf';
 import { indexSegmentsBySource, resolvePointInUnit } from '@/lib/client/reader/segment-hit';
 import { bindTapToSeek } from '@/lib/client/reader/tap-to-seek';
 import { useLatestRef } from '@/hooks/useLatestRef';
+import { cn } from '@/components/ui';
 
 interface PDFViewerProps {
   zoomLevel: number;
+  /** Bumping this number commands the view to re-sync to the reading page. */
+  followRequest?: number;
   onReady?: () => void;
   onError?: (error: Error) => void;
   pdfState: Pick<
@@ -41,13 +44,20 @@ interface PDFOnLinkClickArgs {
   dest?: Dest;
 }
 
-export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerProps) {
+export function PDFViewer({ zoomLevel, followRequest = 0, onReady, onError, pdfState }: PDFViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollPageRefs = useRef(new Map<number, HTMLDivElement>());
-  const scrollSyncedPageRef = useRef<number | null>(null);
+  const scrollWindowCenterRef = useRef<number | null>(null);
   const programmaticScrollPageRef = useRef<number | null>(null);
+  // True once the user scrolled away from the page being read. While set,
+  // playback page turns no longer yank the view; the sync button (or scrolling
+  // back to the reading page) clears it.
+  const userDivergedRef = useRef(false);
   const scrollFrameRef = useRef<number | null>(null);
   const [isPageRendering, setIsPageRendering] = useState(false);
+  // Scroll mode renders only pages near the viewport; the rest are sized
+  // placeholders so scrollbar position and programmatic alignment stay intact.
+  const [scrollWindowCenter, setScrollWindowCenter] = useState<number | null>(null);
   const [textLayerReadyLayoutKey, setTextLayerReadyLayoutKey] = useState('');
   const scaleRef = useRef<number>(1);
   const { containerWidth, containerHeight } = usePDFResize(containerRef);
@@ -58,7 +68,7 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
   const lastWordLayoutKeyRef = useRef<string>('');
 
   // Config context
-  const { viewType, pdfHighlightEnabled, pdfWordHighlightEnabled } = useConfig();
+  const { viewType, pdfHighlightEnabled, pdfWordHighlightEnabled, pdfPageTheme } = useConfig();
 
   // TTS context
   const {
@@ -143,8 +153,9 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
     const targetHeight = effectiveContainerHeight - margin;
     const scaleByWidth = Math.max(0.1, targetWidth / width);
 
+    // Continuous scroll reads as fit-width at 100%; zoom is a multiplier on that.
     if (viewType === 'scroll') {
-      return scaleByWidth * 0.75 * (zoomLevel / 100);
+      return scaleByWidth * (zoomLevel / 100);
     }
 
     const scaleByHeight = Math.max(0.1, targetHeight / height);
@@ -428,16 +439,14 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
 
   // React-PDF can resize the active page again when its text layer commits.
   // Keep commanded navigation authoritative through that reflow, then let
-  // ordinary scroll events resume synchronizing the visible page to playback.
+  // ordinary scroll events resume. Playback page turns only follow the audio
+  // while the user has not scrolled away (see `userDivergedRef`).
   useLayoutEffect(() => {
     if (viewType !== 'scroll') {
       programmaticScrollPageRef.current = null;
       return;
     }
-    if (scrollSyncedPageRef.current === currDocPage) {
-      scrollSyncedPageRef.current = null;
-      return;
-    }
+    if (userDivergedRef.current) return;
 
     const container = containerRef.current;
     const page = scrollPageRefs.current.get(currDocPage);
@@ -485,11 +494,64 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
     };
   }, [currDocPage, layoutKey, textLayerReadyLayoutKey, viewType]);
 
+  // The "show current sentence" command re-syncs the view to the reading page
+  // and re-enables audio following, even if the user had scrolled away.
+  useEffect(() => {
+    if (!followRequest) return;
+    if (viewType !== 'scroll') return;
+    userDivergedRef.current = false;
+
+    const container = containerRef.current;
+    const page = scrollPageRefs.current.get(currDocPage);
+    if (!container || !page) return;
+
+    programmaticScrollPageRef.current = currDocPage;
+    let frame: number | null = null;
+    let remainingAttempts = 120;
+    const align = () => {
+      if (programmaticScrollPageRef.current !== currDocPage) {
+        programmaticScrollPageRef.current = null;
+        return;
+      }
+      const containerRect = container.getBoundingClientRect();
+      const pageRect = page.getBoundingClientRect();
+      container.scrollTo({
+        top: container.scrollTop + pageRect.top - containerRect.top,
+        behavior: 'auto',
+      });
+      const overlap = Math.max(
+        0,
+        Math.min(containerRect.bottom, pageRect.bottom)
+          - Math.max(containerRect.top, pageRect.top),
+      );
+      if (pageRect.height > 0 && overlap > 0) {
+        programmaticScrollPageRef.current = null;
+        return;
+      }
+      remainingAttempts -= 1;
+      if (remainingAttempts > 0) frame = window.requestAnimationFrame(align);
+      else programmaticScrollPageRef.current = null;
+    };
+    align();
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [followRequest, currDocPage, viewType]);
+
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollFrameRef.current);
     }
   }, []);
+
+  // Programmatic navigation (pager arrows, playback page turns) re-centers the
+  // rendered window on the commanded page.
+  useEffect(() => {
+    if (currDocPage !== scrollWindowCenterRef.current) {
+      scrollWindowCenterRef.current = currDocPage;
+      setScrollWindowCenter(currDocPage);
+    }
+  }, [currDocPage]);
 
   const handleScroll = useCallback(() => {
     if (viewType !== 'scroll' || scrollFrameRef.current !== null) return;
@@ -515,11 +577,20 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
         }
       }
 
-      if (visiblePage === currDocPage) return;
-      scrollSyncedPageRef.current = visiblePage;
-      skipToLocation(visiblePage, true);
+      // Scrolling is purely visual: playback and the reading cursor keep
+      // reading where they were. Browsing away disables the automatic
+      // view-follow of playback page turns; scrolling back (or the sync
+      // button) re-enables it. Tapping a paragraph seeks the audio.
+      userDivergedRef.current = visiblePage !== currDocPage;
+      if (visiblePage !== scrollWindowCenterRef.current) {
+        scrollWindowCenterRef.current = visiblePage;
+        setScrollWindowCenter(visiblePage);
+      }
     });
-  }, [currDocPage, skipToLocation, viewType]);
+  }, [currDocPage, viewType]);
+
+  // Fallback center while nothing has been measured yet.
+  const renderWindowCenter = scrollWindowCenter ?? currDocPage;
 
   const parsedPageByNumber = useMemo(() => {
     const map = new Map<number, ParsedPdfPage>();
@@ -669,7 +740,11 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex flex-col items-center overflow-auto w-full px-6 h-full pdf-viewer"
+      className={cn(
+        'flex flex-col items-center overflow-auto w-full px-6 h-full pdf-viewer',
+        pdfPageTheme === 'night' && 'pdf-theme-night',
+        pdfPageTheme === 'sepia' && 'pdf-theme-sepia',
+      )}
     >
       <Document
         key={currDocId || 'pdf'}
@@ -696,38 +771,53 @@ export function PDFViewer({ zoomLevel, onReady, onError, pdfState }: PDFViewerPr
       >
         <div className="pdf-page-stage" data-rendering={isPageRendering ? 'true' : 'false'}>
           {viewType === 'scroll' ? (
-            // Scroll mode: render all pages
+            // Scroll mode: all pages exist as sized wrappers; only pages near
+            // the viewport render a canvas, the rest are placeholders.
             <div className="flex flex-col gap-4">
-              {currDocPages && [...Array(currDocPages)].map((_, i) => (
-                <div
-                  key={`page_wrap_${i + 1}`}
-                  ref={(node) => {
-                    if (node) scrollPageRefs.current.set(i + 1, node);
-                    else scrollPageRefs.current.delete(i + 1);
-                  }}
-                  role="region"
-                  aria-label={`PDF page ${i + 1}`}
-                  className="relative"
-                >
-                  <Page
-                    key={`page_${i + 1}`}
-                    pageNumber={i + 1}
-                    renderAnnotationLayer={true}
-                    renderTextLayer={i + 1 === currDocPage}
-                    className="shadow-elev-2"
-                    scale={renderScale}
-                    onRenderSuccess={i + 1 === currDocPage ? handlePageRenderSuccess : undefined}
-                    onRenderError={reportSurfaceCommitError}
-                    onRenderTextLayerSuccess={i + 1 === currDocPage ? handleTextLayerRenderSuccess : undefined}
-                    onRenderTextLayerError={reportSurfaceCommitError}
-                    onLoadSuccess={(page) => {
-                      setPageWidth(page.originalWidth);
-                      setPageHeight(page.originalHeight);
+              {currDocPages && [...Array(currDocPages)].map((_, i) => {
+                const pageNumber = i + 1;
+                const inRenderWindow = Math.abs(pageNumber - renderWindowCenter) <= 2
+                  || pageNumber === currDocPage;
+                const placeholderWidth = pageWidth * renderScale;
+                const placeholderHeight = pageHeight * renderScale;
+                return (
+                  <div
+                    key={`page_wrap_${pageNumber}`}
+                    ref={(node) => {
+                      if (node) scrollPageRefs.current.set(pageNumber, node);
+                      else scrollPageRefs.current.delete(pageNumber);
                     }}
-                  />
-                  {renderParsedOverlay(i + 1)}
-                </div>
-              ))}
+                    role="region"
+                    aria-label={`PDF page ${pageNumber}`}
+                    className="relative"
+                  >
+                    {inRenderWindow ? (
+                      <Page
+                        key={`page_${pageNumber}`}
+                        pageNumber={pageNumber}
+                        renderAnnotationLayer={true}
+                        renderTextLayer={pageNumber === currDocPage}
+                        className="shadow-elev-2"
+                        scale={renderScale}
+                        onRenderSuccess={pageNumber === currDocPage ? handlePageRenderSuccess : undefined}
+                        onRenderError={reportSurfaceCommitError}
+                        onRenderTextLayerSuccess={pageNumber === currDocPage ? handleTextLayerRenderSuccess : undefined}
+                        onRenderTextLayerError={reportSurfaceCommitError}
+                        onLoadSuccess={(page) => {
+                          setPageWidth(page.originalWidth);
+                          setPageHeight(page.originalHeight);
+                        }}
+                      />
+                    ) : (
+                      <div
+                        className="pdf-page-placeholder shadow-elev-2"
+                        style={{ width: placeholderWidth, height: placeholderHeight }}
+                      />
+                    )}
+                    {renderParsedOverlay(pageNumber)}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             // Single/Dual page mode

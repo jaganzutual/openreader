@@ -3,6 +3,9 @@ import type { TtsProviderType } from '@openreader/tts/provider-catalog';
 
 export type ViewType = 'single' | 'dual' | 'scroll';
 
+/** Rendering theme for the PDF page surface itself (the app UI keeps its theme). */
+export type PdfPageTheme = 'light' | 'night' | 'sepia';
+
 export type SavedVoices = Record<string, string>;
 
 export const TTS_SEGMENT_MAX_BLOCK_LENGTH_MIN = 150;
@@ -34,6 +37,7 @@ export interface AppConfigValues {
   ttsSegmentMaxBlockLength: number;
   pdfHighlightEnabled: boolean;
   pdfWordHighlightEnabled: boolean;
+  pdfPageTheme: PdfPageTheme;
   epubHighlightEnabled: boolean;
   epubWordHighlightEnabled: boolean;
   htmlHighlightEnabled: boolean;
@@ -55,7 +59,7 @@ export function getAppConfigDefaults(): AppConfigValues {
   // provider id (the old 'custom-openai') into every user's config, since that
   // value isn't actually selectable in shared-provider mode.
   return {
-    viewType: 'single',
+    viewType: 'scroll',
     voiceSpeed: 1,
     audioPlayerSpeed: 1,
     voice: '',
@@ -73,6 +77,7 @@ export function getAppConfigDefaults(): AppConfigValues {
     ttsSegmentMaxBlockLength: 450,
     pdfHighlightEnabled: true,
     pdfWordHighlightEnabled: true,
+    pdfPageTheme: 'light',
     epubHighlightEnabled: true,
     epubWordHighlightEnabled: true,
     htmlHighlightEnabled: true,
